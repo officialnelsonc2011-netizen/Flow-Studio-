@@ -1,451 +1,864 @@
-const state = {
-  startFrameFile: null,
-  startFrameDataUrl: null,
-  chatHistory: [],
-  clips: [],
-  activeClipIndex: -1,
-  abortController: null,
-  settings: {
-    spaceId: localStorage.getItem("flow_space_id") || "",
-    hfToken: localStorage.getItem("flow_hf_token") || "",
-    geminiModel: localStorage.getItem("flow_gemini_model") || "",
-    geminiApiKey: localStorage.getItem("flow_gemini_key") || "",
-  },
-  serverConfig: null,
-};
-
-// DOM Elements
-const activeSpaceBadge = document.getElementById("activeSpaceBadge");
-const toggleAssistantBtn = document.getElementById("toggleAssistantBtn");
-const closeSidebarBtn = document.getElementById("closeSidebarBtn");
-const assistantSidebar = document.getElementById("assistantSidebar");
-const drawerBackdrop = document.getElementById("drawerBackdrop");
-
-const playerEmpty = document.getElementById("playerEmpty");
-const videoPlayer = document.getElementById("videoPlayer");
-const progressOverlay = document.getElementById("progressOverlay");
-const progressTitle = document.getElementById("progressTitle");
-const progressDetail = document.getElementById("progressDetail");
-const cancelGenBtn = document.getElementById("cancelGenBtn");
-const modeBadge = document.getElementById("modeBadge");
-const clipMetaText = document.getElementById("clipMetaText");
-const downloadClipBtn = document.getElementById("downloadClipBtn");
-const clipStrip = document.getElementById("clipStrip");
-
-const startFrameDropzone = document.getElementById("startFrameDropzone");
-const startFrameInput = document.getElementById("startFrameInput");
-const startFramePlaceholder = document.getElementById("startFramePlaceholder");
-const startFramePreviewWrap = document.getElementById("startFramePreviewWrap");
-const startFramePreview = document.getElementById("startFramePreview");
-const clearFrameBtn = document.getElementById("clearFrameBtn");
-
-const generateForm = document.getElementById("generateForm");
-const promptInput = document.getElementById("promptInput");
-const negativeRow = document.getElementById("negativeRow");
-const negativePromptInput = document.getElementById("negativePromptInput");
-const toggleNegBtn = document.getElementById("toggleNegBtn");
-const quickEnhanceBtn = document.getElementById("quickEnhanceBtn");
-const aspectSelect = document.getElementById("aspectSelect");
-const durationInput = document.getElementById("durationInput");
-const durationVal = document.getElementById("durationVal");
-const generateBtn = document.getElementById("generateBtn");
-
-const chatMessages = document.getElementById("chatMessages");
-const assistantForm = document.getElementById("assistantForm");
-const assistantInput = document.getElementById("assistantInput");
-const includeFrameCheck = document.getElementById("includeFrameCheck");
-const starterChips = document.getElementById("starterChips");
-
-const settingsModal = document.getElementById("settingsModal");
-const openSettingsBtn = document.getElementById("openSettingsBtn");
-const closeSettingsBtn = document.getElementById("closeSettingsBtn");
-const cancelSettingsBtn = document.getElementById("cancelSettingsBtn");
-const settingsForm = document.getElementById("settingsForm");
-const spaceIdInput = document.getElementById("spaceIdInput");
-const hfTokenInput = document.getElementById("hfTokenInput");
-const geminiModelSelect = document.getElementById("geminiModelSelect");
-const geminiKeyInput = document.getElementById("geminiKeyInput");
-const serverKeyStatus = document.getElementById("serverKeyStatus");
-
-// Initialize defaults from server .env
-async function initStudio() {
-  try {
-    const res = await fetch("/api/config");
-    const cfg = await res.json();
-    state.serverConfig = cfg;
-
-    if (!state.settings.spaceId) state.settings.spaceId = cfg.defaultSpace;
-    if (!state.settings.geminiModel) state.settings.geminiModel = cfg.geminiModel;
-
-    activeSpaceBadge.textContent = state.settings.spaceId;
-    serverKeyStatus.textContent = cfg.hasServerGeminiKey
-      ? "Server .env GEMINI_API_KEY detected."
-      : "No server .env key detected — paste your free Google AI Studio key above.";
-  } catch (err) {
-    console.error("Failed to fetch config", err);
-  }
-
-  // Collapse sidebar by default on mobile screens so canvas gets full focus
-  if (window.innerWidth <= 960) {
-    setSidebarOpen(false);
-  }
-}
-
-function setSidebarOpen(isOpen) {
-  assistantSidebar.classList.toggle("collapsed", !isOpen);
-  toggleAssistantBtn.setAttribute("aria-expanded", String(isOpen));
-  const isMobile = window.innerWidth <= 960;
-  drawerBackdrop.classList.toggle("hidden", !(isOpen && isMobile));
-}
-
-toggleAssistantBtn.addEventListener("click", () => {
-  const isCollapsed = assistantSidebar.classList.contains("collapsed");
-  setSidebarOpen(isCollapsed);
-});
-
-closeSidebarBtn.addEventListener("click", () => setSidebarOpen(false));
-drawerBackdrop.addEventListener("click", () => setSidebarOpen(false));
-
-// Duration & Negative Prompt UI
-durationInput.addEventListener("input", () => {
-  durationVal.textContent = durationInput.value;
-});
-
-toggleNegBtn.addEventListener("click", () => {
-  negativeRow.classList.toggle("hidden");
-});
-
-// Start Frame Upload Box (Click + Drag/Drop)
-function handleStartFrameFile(file) {
-  if (!file || !file.type.startsWith("image/")) return;
-  state.startFrameFile = file;
-
-  const reader = new FileReader();
-  reader.onload = (e) => {
-    state.startFrameDataUrl = e.target.result;
-    startFramePreview.src = state.startFrameDataUrl;
-    startFramePlaceholder.classList.add("hidden");
-    startFramePreviewWrap.classList.remove("hidden");
-    modeBadge.textContent = "Image to Video";
-    modeBadge.classList.add("i2v");
-  };
-  reader.readAsDataURL(file);
-}
-
-function clearStartFrame() {
-  state.startFrameFile = null;
-  state.startFrameDataUrl = null;
-  startFrameInput.value = "";
-  startFramePreview.src = "";
-  startFramePreviewWrap.classList.add("hidden");
-  startFramePlaceholder.classList.remove("hidden");
-  modeBadge.textContent = "Text to Video";
-  modeBadge.classList.remove("i2v");
-}
-
-startFrameDropzone.addEventListener("click", (e) => {
-  if (e.target === clearFrameBtn) return;
-  startFrameInput.click();
-});
-
-startFrameDropzone.addEventListener("keydown", (e) => {
-  if (e.key === "Enter" || e.key === " ") {
-    e.preventDefault();
-    startFrameInput.click();
-  }
-});
-
-startFrameInput.addEventListener("change", (e) => {
-  if (e.target.files?.[0]) handleStartFrameFile(e.target.files[0]);
-});
-
-startFrameDropzone.addEventListener("dragover", (e) => {
-  e.preventDefault();
-  startFrameDropzone.classList.add("drag-over");
-});
-
-startFrameDropzone.addEventListener("dragleave", () => {
-  startFrameDropzone.classList.remove("drag-over");
-});
-
-startFrameDropzone.addEventListener("drop", (e) => {
-  e.preventDefault();
-  startFrameDropzone.classList.remove("drag-over");
-  if (e.dataTransfer?.files?.[0]) handleStartFrameFile(e.dataTransfer.files[0]);
-});
-
-clearFrameBtn.addEventListener("click", (e) => {
-  e.stopPropagation();
-  clearStartFrame();
-});
-
-// Gemini Chat Assistant Logic
-function appendChatMessage(role, { reply, expandedPrompt, negativePrompt, suggestedDuration }) {
-  const wrapper = document.createElement("div");
-  wrapper.className = `chat-msg ${role}`;
-
-  const bubble = document.createElement("div");
-  bubble.className = "msg-bubble";
-
-  const p = document.createElement("p");
-  p.textContent = reply;
-  bubble.appendChild(p);
-
-  if (role === "assistant" && expandedPrompt) {
-    const box = document.createElement("div");
-    box.className = "prompt-suggestion-box";
-    box.textContent = expandedPrompt;
-
-    const applyBtn = document.createElement("button");
-    applyBtn.type = "button";
-    applyBtn.className = "apply-prompt-btn";
-    applyBtn.textContent = "Use Prompt in Studio";
-    applyBtn.addEventListener("click", () => {
-      promptInput.value = expandedPrompt;
-      if (negativePrompt) negativePromptInput.value = negativePrompt;
-      if (suggestedDuration) {
-        const clamped = Math.max(1, Math.min(5, Math.round(suggestedDuration * 2) / 2));
-        durationInput.value = String(clamped);
-        durationVal.textContent = String(clamped);
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Flow Studio — AI Video Workspace</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --bg-canvas: #090b10;
+        --bg-surface: #11141c;
+        --bg-elevated: #181c27;
+        --bg-pill: #202534;
+        --border-subtle: rgba(255, 255, 255, 0.08);
+        --border-strong: rgba(255, 255, 255, 0.16);
+        --text-primary: #f3f5f9;
+        --text-secondary: #9aa3b5;
+        --text-muted: #6c7486;
+        --accent-indigo: #6e7bff;
+        --accent-cyan: #38bdf8;
+        --accent-gradient: linear-gradient(135deg, #6e7bff 0%, #38bdf8 100%);
+        --danger: #f87171;
+        --success: #34d399;
+        --radius-lg: 18px;
+        --radius-md: 12px;
+        --sidebar-width: 380px;
       }
-      if (window.innerWidth <= 960) setSidebarOpen(false);
-      promptInput.focus();
-    });
 
-    box.appendChild(applyBtn);
-    bubble.appendChild(box);
-  }
+      * {
+        box-sizing: border-box;
+      }
 
-  wrapper.appendChild(bubble);
-  chatMessages.appendChild(wrapper);
-  chatMessages.scrollTop = chatMessages.scrollHeight;
-}
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        background: var(--bg-canvas);
+        color: var(--text-primary);
+        font-family: "Inter", system-ui, -apple-system, sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
 
-async function sendToGemini(ideaText) {
-  const trimmed = ideaText.trim();
-  if (!trimmed) return;
+      .hidden {
+        display: none !important;
+      }
 
-  state.chatHistory.push({ role: "user", content: trimmed });
-  appendChatMessage("user", { reply: trimmed });
+      .studio-shell {
+        display: flex;
+        flex-direction: column;
+        height: 100dvh;
+        overflow: hidden;
+      }
 
-  const loadingEl = document.createElement("div");
-  loadingEl.className = "chat-msg assistant";
-  loadingEl.innerHTML = `<div class="msg-bubble"><p>Drafting camera &amp; motion cues...</p></div>`;
-  chatMessages.appendChild(loadingEl);
-  chatMessages.scrollTop = chatMessages.scrollHeight;
+      .studio-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 12px 18px;
+        background: rgba(17, 20, 28, 0.88);
+        backdrop-filter: blur(14px);
+        border-bottom: 1px solid var(--border-subtle);
+        z-index: 20;
+      }
 
-  try {
-    const res = await fetch("/api/assistant", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        messages: state.chatHistory,
-        currentPrompt: promptInput.value.trim(),
-        startFrameDataUrl: includeFrameCheck.checked ? state.startFrameDataUrl : null,
-        geminiApiKey: state.settings.geminiApiKey || undefined,
-        model: state.settings.geminiModel || undefined,
-      }),
-    });
+      .header-left {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        min-width: 0;
+      }
 
-    const data = await res.json();
-    loadingEl.remove();
+      .brand-mark {
+        width: 30px;
+        height: 30px;
+        border-radius: 10px;
+        background: var(--accent-gradient);
+        display: grid;
+        place-items: center;
+        flex-shrink: 0;
+        box-shadow: 0 0 18px rgba(110, 123, 255, 0.35);
+      }
 
-    if (!res.ok) {
-      appendChatMessage("assistant", {
-        reply: `Gemini Error: ${data.error || "Request failed."}`,
-      });
-      return;
-    }
+      .brand-dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: #fff;
+      }
 
-    state.chatHistory.push({
-      role: "assistant",
-      content: `${data.reply}\nPrompt: ${data.expandedPrompt}`,
-    });
-    appendChatMessage("assistant", data);
-  } catch (err) {
-    loadingEl.remove();
-    appendChatMessage("assistant", {
-      reply: `Network error contacting Gemini backend: ${err.message}`,
-    });
-  }
-}
+      .brand-copy {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        min-width: 0;
+      }
 
-assistantForm.addEventListener("submit", (e) => {
-  e.preventDefault();
-  const idea = assistantInput.value;
-  assistantInput.value = "";
-  sendToGemini(idea);
-});
+      .brand-name {
+        font-weight: 700;
+        font-size: 0.98rem;
+        letter-spacing: -0.02em;
+        white-space: nowrap;
+      }
 
-starterChips.addEventListener("click", (e) => {
-  const chip = e.target.closest(".chip");
-  if (!chip) return;
-  sendToGemini(chip.dataset.idea);
-});
+      .space-pill {
+        font-size: 0.74rem;
+        color: var(--text-secondary);
+        background: var(--bg-elevated);
+        border: 1px solid var(--border-subtle);
+        padding: 4px 10px;
+        border-radius: 999px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        max-width: 230px;
+      }
 
-quickEnhanceBtn.addEventListener("click", () => {
-  const draft = promptInput.value.trim() || "A moody cinematic establishing shot";
-  setSidebarOpen(true);
-  sendToGemini(`Expand and polish this studio prompt: "${draft}"`);
-});
+      .header-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
 
-// Video Generation via @gradio/client SSE backend
-function renderClipStrip() {
-  if (state.clips.length === 0) {
-    clipStrip.classList.add("hidden");
-    return;
-  }
+      .icon-pill-btn,
+      .assistant-toggle-btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        border-radius: 999px;
+        border: 1px solid var(--border-subtle);
+        background: var(--bg-elevated);
+        color: var(--text-primary);
+        padding: 8px 14px;
+        font-size: 0.84rem;
+        font-weight: 500;
+        cursor: pointer;
+        transition: border-color 0.2s, background 0.2s;
+      }
 
-  clipStrip.classList.remove("hidden");
-  clipStrip.innerHTML = "";
+      .icon-pill-btn:hover,
+      .assistant-toggle-btn:hover {
+        border-color: var(--border-strong);
+        background: var(--bg-pill);
+      }
 
-  state.clips.forEach((clip, idx) => {
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = `clip-thumb ${idx === state.activeClipIndex ? "active" : ""}`;
-    btn.innerHTML = `
-      <video src="${clip.playUrl}" muted playsinline preload="metadata"></video>
-      <span>${clip.prompt}</span>
-    `;
-    btn.addEventListener("click", () => selectClip(idx));
-    clipStrip.appendChild(btn);
-  });
-}
+      .key-dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--danger);
+      }
 
-function selectClip(index) {
-  const clip = state.clips[index];
-  if (!clip) return;
-  state.activeClipIndex = index;
+      .key-dot.ready {
+        background: var(--success);
+      }
 
-  playerEmpty.classList.add("hidden");
-  videoPlayer.classList.remove("hidden");
-  videoPlayer.src = clip.playUrl;
-  videoPlayer.play().catch(() => {});
+      .assistant-toggle-btn .sparkle {
+        color: var(--accent-cyan);
+      }
 
-  clipMetaText.textContent = `${clip.spaceId} · ${clip.mode} · seed ${clip.seed}`;
-  downloadClipBtn.href = `/api/proxy-video?url=${encodeURIComponent(clip.videoUrl)}&download=1`;
-  downloadClipBtn.classList.remove("disabled");
-  downloadClipBtn.removeAttribute("aria-disabled");
+      .workspace-body {
+        display: flex;
+        flex: 1;
+        min-height: 0;
+        position: relative;
+      }
 
-  renderClipStrip();
-}
+      .stage-column {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+        padding: 16px 20px;
+        gap: 14px;
+        overflow-y: auto;
+      }
 
-generateForm.addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const prompt = promptInput.value.trim();
-  if (!prompt) return;
+      .player-stage {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        flex: 1;
+        min-height: 240px;
+      }
 
-  const [width, height] = aspectSelect.value.split("x").map(Number);
+      .player-frame {
+        position: relative;
+        flex: 1;
+        min-height: 250px;
+        max-height: 58dvh;
+        background: radial-gradient(circle at 50% 35%, #161b29 0%, #0b0d14 75%);
+        border: 1px solid var(--border-subtle);
+        border-radius: var(--radius-lg);
+        overflow: hidden;
+        display: grid;
+        place-items: center;
+      }
 
-  const formData = new FormData();
-  formData.append("prompt", prompt);
-  formData.append("negativePrompt", negativePromptInput.value.trim());
-  formData.append("width", String(width));
-  formData.append("height", String(height));
-  formData.append("duration", durationInput.value);
-  formData.append("spaceId", state.settings.spaceId);
-  if (state.settings.hfToken) formData.append("hfToken", state.settings.hfToken);
-  if (state.startFrameFile) formData.append("startFrame", state.startFrameFile);
+      .player-empty {
+        text-align: center;
+        padding: 28px;
+        max-width: 450px;
+      }
 
-  state.abortController = new AbortController();
-  generateBtn.disabled = true;
-  progressOverlay.classList.remove("hidden");
-  progressTitle.textContent = "Connecting to Hugging Face Space...";
-  progressDetail.textContent = state.settings.spaceId;
+      .empty-orb {
+        width: 56px;
+        height: 56px;
+        margin: 0 auto 14px;
+        border-radius: 50%;
+        background: var(--accent-gradient);
+        opacity: 0.85;
+        box-shadow: 0 0 36px rgba(56, 189, 248, 0.28);
+      }
 
-  try {
-    const response = await fetch("/api/generate-video", {
-      method: "POST",
-      body: formData,
-      signal: state.abortController.signal,
-    });
+      .player-empty h1 {
+        margin: 0 0 8px;
+        font-size: 1.25rem;
+        font-weight: 600;
+      }
 
-    if (!response.ok || !response.body) {
-      throw new Error(`HTTP ${response.status} from video generation backend`);
-    }
+      .player-empty p {
+        margin: 0;
+        font-size: 0.9rem;
+        line-height: 1.5;
+        color: var(--text-secondary);
+      }
 
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
+      .video-player {
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+        background: #000;
+      }
 
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
+      .progress-overlay {
+        position: absolute;
+        inset: 0;
+        background: rgba(9, 11, 16, 0.84);
+        backdrop-filter: blur(10px);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+        text-align: center;
+        gap: 10px;
+        z-index: 5;
+      }
 
-      buffer += decoder.decode(value, { stream: true });
-      const blocks = buffer.split("\n\n");
-      buffer = blocks.pop() || "";
+      .spinner-ring {
+        width: 40px;
+        height: 40px;
+        border-radius: 50%;
+        border: 3px solid rgba(255, 255, 255, 0.14);
+        border-top-color: var(--accent-cyan);
+        animation: spin 0.9s linear infinite;
+      }
 
-      for (const block of blocks) {
-        const lines = block.split("\n");
-        const eventLine = lines.find((l) => l.startsWith("event:"));
-        const dataLine = lines.find((l) => l.startsWith("data:"));
-        if (!eventLine || !dataLine) continue;
-
-        const eventName = eventLine.replace("event:", "").trim();
-        const payload = JSON.parse(dataLine.replace("data:", "").trim());
-
-        if (eventName === "status") {
-          progressTitle.textContent =
-            payload.stage === "generating" ? "Rendering video frames..." : "Working in Space queue...";
-          progressDetail.textContent = payload.message || "Waiting for ZeroGPU worker...";
-        } else if (eventName === "complete") {
-          const playUrl = `/api/proxy-video?url=${encodeURIComponent(payload.videoUrl)}`;
-          state.clips.unshift({
-            ...payload,
-            playUrl,
-            prompt,
-          });
-          selectClip(0);
-        } else if (eventName === "error") {
-          throw new Error(payload.message || "Generation failed.");
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
         }
       }
-    }
-  } catch (err) {
-    if (err.name !== "AbortError") {
-      clipMetaText.textContent = `Error: ${err.message}`;
-      alert(err.message);
-    } else {
-      clipMetaText.textContent = "Generation cancelled";
-    }
-  } finally {
-    progressOverlay.classList.add("hidden");
-    generateBtn.disabled = false;
-    state.abortController = null;
-  }
-});
 
-cancelGenBtn.addEventListener("click", () => {
-  state.abortController?.abort();
-});
+      .progress-title {
+        margin: 0;
+        font-weight: 600;
+        font-size: 0.98rem;
+      }
 
-// Settings Modal
-openSettingsBtn.addEventListener("click", () => {
-  spaceIdInput.value = state.settings.spaceId;
-  hfTokenInput.value = state.settings.hfToken;
-  geminiModelSelect.value = state.settings.geminiModel || "gemini-3.8-flash";
-  geminiKeyInput.value = state.settings.geminiApiKey;
-  settingsModal.showModal();
-});
+      .progress-detail {
+        margin: 0;
+        font-size: 0.83rem;
+        color: var(--text-secondary);
+        max-width: 420px;
+      }
 
-closeSettingsBtn.addEventListener("click", () => settingsModal.close());
-cancelSettingsBtn.addEventListener("click", () => settingsModal.close());
+      .cancel-gen-btn {
+        margin-top: 6px;
+        padding: 6px 14px;
+        border-radius: 999px;
+        border: 1px solid rgba(248, 113, 113, 0.4);
+        background: rgba(248, 113, 113, 0.12);
+        color: var(--danger);
+        font-size: 0.8rem;
+        cursor: pointer;
+      }
 
-settingsForm.addEventListener("submit", (e) => {
-  e.preventDefault();
-  state.settings.spaceId = spaceIdInput.value.trim() || "Lightricks/ltx-video-distilled";
-  state.settings.hfToken = hfTokenInput.value.trim();
-  state.settings.geminiModel = geminiModelSelect.value;
-  state.settings.geminiApiKey = geminiKeyInput.value.trim();
+      .player-meta-bar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
 
-  localStorage.setItem("flow_space_id", state.settings.spaceId);
-  localStorage.setItem("flow_hf_token", state.settings.hfToken);
-  localStorage.setItem("flow_gemini_model", state.settings.geminiModel);
-  localStorage.setItem("flow_gemini_key", state.settings.geminiApiKey);
+      .meta-badges {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        min-width: 0;
+      }
 
-  activeSpaceBadge.textContent = state.settings.spaceId;
-  settingsModal.close();
-});
+      .mode-badge {
+        font-size: 0.75rem;
+        font-weight: 600;
+        padding: 4px 10px;
+        border-radius: 999px;
+        background: rgba(110, 123, 255, 0.16);
+        color: #aeb6ff;
+        border: 1px solid rgba(110, 123, 255, 0.3);
+        white-space: nowrap;
+      }
 
-initStudio();
+      .mode-badge.i2v {
+        background: rgba(56, 189, 248, 0.16);
+        color: #7dd3fc;
+        border-color: rgba(56, 189, 248, 0.35);
+      }
+
+      .meta-text {
+        font-size: 0.82rem;
+        color: var(--text-secondary);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .ghost-btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 7px 14px;
+        border-radius: 999px;
+        border: 1px solid var(--border-subtle);
+        background: transparent;
+        color: var(--text-primary);
+        font-size: 0.82rem;
+        text-decoration: none;
+        cursor: pointer;
+      }
+
+      .ghost-btn:disabled {
+        opacity: 0.4;
+        pointer-events: none;
+      }
+
+      .clip-strip {
+        display: flex;
+        gap: 10px;
+        overflow-x: auto;
+        padding: 4px 2px;
+      }
+
+      .clip-thumb {
+        flex: 0 0 118px;
+        border-radius: 10px;
+        border: 1px solid var(--border-subtle);
+        background: var(--bg-surface);
+        overflow: hidden;
+        cursor: pointer;
+        padding: 0;
+        color: inherit;
+        text-align: left;
+        transition: border-color 0.2s;
+      }
+
+      .clip-thumb.active {
+        border-color: var(--accent-cyan);
+      }
+
+      .clip-thumb video {
+        width: 100%;
+        height: 64px;
+        object-fit: cover;
+        display: block;
+        background: #000;
+      }
+
+      .clip-thumb span {
+        display: block;
+        font-size: 0.7rem;
+        color: var(--text-secondary);
+        padding: 4px 6px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .composer-card {
+        display: flex;
+        gap: 12px;
+        background: var(--bg-surface);
+        border: 1px solid var(--border-subtle);
+        border-radius: var(--radius-lg);
+        padding: 12px;
+        box-shadow: 0 14px 40px rgba(0, 0, 0, 0.35);
+      }
+
+      .start-frame-box {
+        width: 132px;
+        min-height: 118px;
+        flex-shrink: 0;
+        border: 1.5px dashed var(--border-strong);
+        border-radius: var(--radius-md);
+        background: var(--bg-elevated);
+        position: relative;
+        overflow: hidden;
+        cursor: pointer;
+        display: grid;
+        place-items: center;
+        transition: border-color 0.2s, background 0.2s;
+      }
+
+      .start-frame-box:hover,
+      .start-frame-box.drag-over {
+        border-color: var(--accent-cyan);
+        background: rgba(56, 189, 248, 0.08);
+      }
+
+      .start-frame-placeholder {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        text-align: center;
+        gap: 4px;
+        padding: 10px;
+        color: var(--text-secondary);
+      }
+
+      .sf-label {
+        font-size: 0.78rem;
+        font-weight: 600;
+        color: var(--text-primary);
+      }
+
+      .sf-hint {
+        font-size: 0.68rem;
+        color: var(--text-muted);
+      }
+
+      .start-frame-preview {
+        position: relative;
+        width: 100%;
+        height: 100%;
+      }
+
+      .start-frame-preview img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        display: block;
+      }
+
+      .clear-frame-btn {
+        position: absolute;
+        top: 6px;
+        right: 6px;
+        width: 24px;
+        height: 24px;
+        border-radius: 50%;
+        border: none;
+        background: rgba(0, 0, 0, 0.72);
+        color: #fff;
+        cursor: pointer;
+        font-size: 0.75rem;
+        display: grid;
+        place-items: center;
+      }
+
+      .sf-badge {
+        position: absolute;
+        bottom: 6px;
+        left: 6px;
+        font-size: 0.65rem;
+        font-weight: 600;
+        background: rgba(9, 11, 16, 0.82);
+        color: var(--accent-cyan);
+        padding: 2px 6px;
+        border-radius: 6px;
+      }
+
+      .prompt-area-wrap {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+
+      .prompt-area-wrap textarea {
+        width: 100%;
+        resize: none;
+        border: none;
+        outline: none;
+        background: transparent;
+        color: var(--text-primary);
+        font-family: inherit;
+        font-size: 0.94rem;
+        line-height: 1.45;
+        padding: 4px;
+      }
+
+      .prompt-area-wrap textarea::placeholder {
+        color: var(--text-muted);
+      }
+
+      .negative-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        background: var(--bg-elevated);
+        border: 1px solid var(--border-subtle);
+        border-radius: 10px;
+        padding: 6px 10px;
+      }
+
+      .negative-row label {
+        font-size: 0.75rem;
+        color: var(--text-muted);
+        font-weight: 600;
+      }
+
+      .negative-row input {
+        flex: 1;
+        border: none;
+        background: transparent;
+        color: var(--text-secondary);
+        font-size: 0.82rem;
+        outline: none;
+      }
+
+      .composer-controls {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+
+      .control-pills {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+
+      .pill-select,
+      .pill-slider,
+      .pill-toggle {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        height: 34px;
+        padding: 0 11px;
+        border-radius: 999px;
+        border: 1px solid var(--border-subtle);
+        background: var(--bg-elevated);
+        color: var(--text-secondary);
+        font-size: 0.78rem;
+        cursor: pointer;
+      }
+
+      .pill-select {
+        color: var(--text-primary);
+      }
+
+      .pill-slider input[type="range"] {
+        width: 58px;
+        accent-color: var(--accent-cyan);
+      }
+
+      .pill-toggle.accent-soft {
+        color: var(--accent-cyan);
+        border-color: rgba(56, 189, 248, 0.3);
+        background: rgba(56, 189, 248, 0.08);
+      }
+
+      .generate-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        height: 38px;
+        padding: 0 18px;
+        border: none;
+        border-radius: 999px;
+        background: var(--accent-gradient);
+        color: #060911;
+        font-weight: 700;
+        font-size: 0.86rem;
+        cursor: pointer;
+        transition: opacity 0.2s;
+      }
+
+      .generate-btn:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
+      }
+
+      .assistant-sidebar {
+        width: var(--sidebar-width);
+        flex-shrink: 0;
+        background: var(--bg-surface);
+        border-left: 1px solid var(--border-subtle);
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+      }
+
+      .assistant-sidebar.collapsed {
+        display: none;
+      }
+
+      .sidebar-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 14px 16px;
+        border-bottom: 1px solid var(--border-subtle);
+      }
+
+      .sidebar-title {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .sidebar-title .sparkle {
+        font-size: 1.1rem;
+        color: var(--accent-cyan);
+      }
+
+      .sidebar-title h2 {
+        margin: 0;
+        font-size: 0.94rem;
+        font-weight: 600;
+      }
+
+      .sidebar-title p {
+        margin: 2px 0 0;
+        font-size: 0.72rem;
+        color: var(--text-muted);
+      }
+
+      .close-sidebar-btn,
+      .close-modal-btn {
+        background: transparent;
+        border: none;
+        color: var(--text-secondary);
+        font-size: 1rem;
+        cursor: pointer;
+        padding: 6px;
+      }
+
+      .starter-chips {
+        display: flex;
+        gap: 6px;
+        padding: 10px 14px;
+        overflow-x: auto;
+        border-bottom: 1px solid var(--border-subtle);
+      }
+
+      .chip {
+        flex-shrink: 0;
+        padding: 6px 11px;
+        border-radius: 999px;
+        border: 1px solid var(--border-subtle);
+        background: var(--bg-elevated);
+        color: var(--text-secondary);
+        font-size: 0.74rem;
+        cursor: pointer;
+      }
+
+      .chip:hover {
+        color: var(--text-primary);
+        border-color: var(--border-strong);
+      }
+
+      .chat-messages {
+        flex: 1;
+        overflow-y: auto;
+        padding: 14px;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }
+
+      .chat-msg {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+
+      .chat-msg.user {
+        align-items: flex-end;
+      }
+
+      .msg-bubble {
+        max-width: 92%;
+        padding: 10px 13px;
+        border-radius: 14px;
+        font-size: 0.84rem;
+        line-height: 1.48;
+        background: var(--bg-elevated);
+        border: 1px solid var(--border-subtle);
+      }
+
+      .chat-msg.user .msg-bubble {
+        background: rgba(110, 123, 255, 0.18);
+        border-color: rgba(110, 123, 255, 0.35);
+      }
+
+      .msg-bubble p {
+        margin: 0;
+      }
+
+      .prompt-suggestion-box {
+        margin-top: 8px;
+        padding: 10px;
+        border-radius: 10px;
+        background: rgba(9, 11, 16, 0.65);
+        border: 1px solid rgba(56, 189, 248, 0.25);
+        font-size: 0.8rem;
+        color: #dce6f7;
+      }
+
+      .apply-prompt-btn {
+        margin-top: 8px;
+        width: 100%;
+        padding: 7px 10px;
+        border-radius: 8px;
+        border: none;
+        background: rgba(56, 189, 248, 0.18);
+        color: #7dd3fc;
+        font-weight: 600;
+        font-size: 0.78rem;
+        cursor: pointer;
+      }
+
+      .apply-prompt-btn:hover {
+        background: rgba(56, 189, 248, 0.28);
+      }
+
+      .chat-input-form {
+        padding: 12px 14px;
+        border-top: 1px solid var(--border-subtle);
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        background: var(--bg-surface);
+      }
+
+      .frame-context-toggle {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        font-size: 0.73rem;
+        color: var(--text-secondary);
+        cursor: pointer;
+      }
+
+      .chat-input-row {
+        display: flex;
+        gap: 8px;
+      }
+
+      .chat-input-row input {
+        flex: 1;
+        height: 40px;
+        padding: 0 12px;
+        border-radius: 999px;
+        border: 1px solid var(--border-subtle);
+        background: var(--bg-elevated);
+        color: var(--text-primary);
+        font-size: 0.85rem;
+        outline: none;
+      }
+
+      .send-chat-btn {
+        width: 40px;
+        height: 40px;
+        border-radius: 50%;
+        border: none;
+        background: var(--accent-gradient);
+        color: #060911;
+        display: grid;
+        place-items: center;
+        cursor: pointer;
+        flex-shrink: 0;
+      }
+
+      .settings-modal {
+        border: none;
+        padding: 0;
+        background: transparent;
+        color: var(--text-primary);
+        max-width: 470px;
+        width: calc(100% - 28px);
+      }
+
+      .settings-modal::backdrop {
+        background: rgba(0, 0, 0, 0.72);
+        backdrop-filter: blur(4px);
+      }
+
+      .settings-card {
+        background: var(--bg-surface);
+        border: 1px solid var(--border-strong);
+        border-radius: var(--radius-lg);
+        padding: 20px;
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+      }
+
+      .settings-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+      }
+
+      .settings-head h3 {
+        margin: 0;
+        font-size: 1rem;
+      }
+
+      .settings-note {
+        margin: 0;
+        padding: 10px 12px;
+        border-radius: 10px;
+        background: rgba(56, 189, 248, 0.08);
+        border: 1px solid rgba(56, 189, 248, 0.22);
+        color: var(--text-secondary);
+        font-size: 0.77rem;
+        line-height: 1.45;
+      }
+
+      .field-group {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+
+      .field-group span {
+        font-size: 0.8rem;
+        font-weight: 600;
+      }
+
+      .field-group input,
+      .field-group select {
+        height: 38px;
+        padding: 0 12px;
+        border-radius: 10px;
+        border: 1px solid var(--border-subtle);
+        background: var(--bg-elevated);
+        colo
