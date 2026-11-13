@@ -110,12 +110,14 @@
   </header>
 
   <main>
+    <!-- AI Prompt Writer -->
     <div class="card">
       <h2>1. AI Prompt Assistant (Gemini)</h2>
       <input id="ideaInput" placeholder="Enter a short idea (e.g. a cybernetic lion in Lagos)..." />
       <button class="btn" style="width:100%" onclick="expandPrompt()">✨ Expand Idea into Video Prompt</button>
     </div>
 
+    <!-- Video Generator -->
     <div class="card">
       <h2>2. Video Generator</h2>
       <select id="spaceSelect">
@@ -127,6 +129,7 @@
       <div id="statusText" class="status"></div>
     </div>
 
+    <!-- Video Player -->
     <div class="card">
       <h2>3. Preview</h2>
       <div class="video-box" id="playerArea">
@@ -135,6 +138,7 @@
     </div>
   </main>
 
+  <!-- Settings Modal -->
   <div id="settingsModal">
     <div class="modal-box">
       <h2 style="margin-bottom:12px;">API Settings</h2>
@@ -172,7 +176,7 @@
 
       status.textContent = "Writing detailed cinematic prompt with Gemini...";
       try {
-        const res = await fetch("https://googleapis.com" + encodeURIComponent(key), {
+        const res = await fetch(`https://googleapis.com{key}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -180,14 +184,12 @@
           })
         });
         const data = await res.json();
-        const candidates = data.candidates || [];
-        const parts = (candidates.at(0) && candidates.at(0).content && candidates.at(0).content.parts) || [];
-        const text = parts.at(0) && parts.at(0).text;
+        const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
         if (text) {
           document.getElementById("promptInput").value = text.trim();
           status.textContent = "Prompt ready! Tap Generate Video.";
         } else {
-          status.textContent = "Gemini error: " + ((data.error && data.error.message) || "Check your API key.");
+          status.textContent = "Gemini error: " + (data?.error?.message || "Check your API key.");
         }
       } catch (err) {
         status.textContent = "Network error: " + err.message;
@@ -205,17 +207,14 @@
       status.textContent = "Connecting to free Hugging Face GPU (" + spaceId + ")...";
 
       try {
-        const mod = await import("https://jsdelivr.net");
-        const Client = mod.Client;
+        const { Client } = await import("https://jsdelivr.net");
         const client = await Client.connect(spaceId, hfToken ? { hf_token: hfToken } : {});
         status.textContent = "Generating video on cloud GPU (takes 30-90 seconds)...";
         const result = await client.predict(0, { prompt: prompt });
-        const outList = result.data || [];
-        const firstItem = outList.at(0);
-        const videoUrl = (firstItem && firstItem.url) || (firstItem && firstItem.video && firstItem.video.url) || firstItem;
+        const videoUrl = result?.data?.[0]?.url || result?.data?.[0]?.video?.url || result?.data?.[0];
 
         if (videoUrl && typeof videoUrl === "string") {
-          playerArea.innerHTML = '<video src="' + videoUrl + '" controls autoplay loop playsinline></video>';
+          playerArea.innerHTML = `<video src="${videoUrl}" controls autoplay loop playsinline></video>`;
           status.textContent = "Video generated!";
         } else {
           status.textContent = "Space returned unexpected output. Try switching models or adding an HF token.";
